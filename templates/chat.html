@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EduBot – Your AI Tutor</title>
+
+  <!-- Fonts & Icons -->
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+</head>
+
+<body>
+  <div class="gradient-bg"></div>
+  <div class="container">
+    <!-- Sidebar -->
+    <aside class="sidebar glass">
+      <h2 class="logo"><i class="fa-solid fa-graduation-cap"></i> EduBot</h2>
+      <button id="newChat" class="new-chat">＋ New Chat</button>
+      <button id="themeToggle" class="theme-toggle">🌙</button>
+      <h3 class="history-title">Chat History</h3>
+      <ul id="historyList" class="history-list"></ul>
+    </aside>
+
+    <!-- Chat Area -->
+    <main class="chat-area glass">
+      <div id="chat-box" class="chat-box"></div>
+
+      <!-- Input Bar -->
+      <div class="input-bar">
+        <input id="text" type="text" placeholder="Type your message..." autocomplete="off" />
+        <input type="file" id="fileInput" accept=".jpg,.jpeg,.png,.pdf,.docx" hidden />
+
+        <div class="button-group">
+          <button id="uploadBtn" title="Upload file"><i class="fa-solid fa-paperclip"></i></button>
+          <button id="micBtn" title="Speak"><i class="fa-solid fa-microphone"></i></button>
+          <button id="send" title="Send"><i class="fa-solid fa-paper-plane"></i></button>
+        </div>
+      </div>
+    </main>
+  </div>
+
+ <script>
+let chatHistory = [];
+let darkMode = false;
+
+// -------- Scroll Control --------
+function scrollToBottom() {
+  const box = document.getElementById("chat-box");
+  box.scrollTop = box.scrollHeight;
+}
+
+// -------- Format Bot Reply --------
+function formatText(str) {
+  if (!str) return "";
+  let cleaned = str
+    .replace(/\*+/g, "")
+    .replace(/•\s*/g, "\n• ")
+    .replace(/(\d+\.)\s*/g, "\n$1 ")
+    .replace(/\n{2,}/g, "\n")
+    .trim();
+
+  const lines = cleaned.split("\n").filter(line => line.trim() !== "");
+  return lines.map(line => {
+    if (line.startsWith("•") || /^\d+\./.test(line)) {
+      return `<div class="bullet-line">${line}</div>`;
+    } else {
+      return `<div>${line}</div>`;
+    }
+  }).join("");
+}
+
+// -------- Typing Animation --------
+async function typeWriter(element, html, delay = 15) {
+  const temp = document.createElement("div");
+  temp.innerHTML = html;
+  const text = temp.textContent || temp.innerText;
+  element.innerHTML = "";
+  for (let i = 0; i < text.length; i++) {
+    element.innerHTML += text[i];
+    scrollToBottom();
+    await new Promise(r => setTimeout(r, delay));
+  }
+  $(element).find('.bullet-line').css({opacity: 0}).each(function(index){
+    $(this).delay(40*index).animate({opacity:1},200);
+  });
+}
+
+// -------- Add Message --------
+function addMessage(role, content) {
+  const html = `<div class="message ${role}"><div class="bubble">${content}</div></div>`;
+  $("#chat-box").append(html);
+  scrollToBottom();
+}
+
+// -------- Send Message --------
+function sendMessage(text, extra="") {
+  if (!text) return;
+  const finalText = text + (extra ? " - " + extra : "");
+  addMessage("user", finalText);
+  $("#text").val("");
+  addMessage("bot typing", "Typing...");
+
+  $.ajax({
+    type: "POST",
+    url: "/get",
+    data: { msg: finalText },
+    success: async function (data) {
+      $(".typing").remove();
+      const reply = formatText(data.response);
+      const botBubble = $('<div class="message bot"><div class="bubble"></div></div>');
+      $("#chat-box").append(botBubble);
+      const bubble = botBubble.find(".bubble")[0];
+      await typeWriter(bubble, reply, 15);
+      scrollToBottom();
+      saveToHistory(text);
+    },
+    error: function () {
+      $(".typing").remove();
+      addMessage("bot", "⚠️ Error getting reply.");
+    },
+  });
+}
+
+// -------- Event Handlers --------
+$("#send").click(() => sendMessage($("#text").val().trim()));
+$("#text").keypress(e => { if(e.which===13) sendMessage($("#text").val().trim()); });
+$("#newChat").click(()=> { $("#chat-box").html(""); chatHistory=[]; $("#historyList").html(""); });
+
+// -------- File Upload --------
+$("#uploadBtn").click(()=> $("#fileInput").click());
+$("#fileInput").on("change", function(){
+  const file = this.files[0];
+  if(!file) return;
+  const formData = new FormData();
+  formData.append("file", file);
+
+  if(file.type.startsWith("image/")) {
+    const reader = new FileReader();
+    reader.onload = e => addMessage("user", `<img src="${e.target.result}" class="preview-img"/>`);
+    reader.readAsDataURL(file);
+  } else {
+    addMessage("user", `📂 ${file.name}`);
+  }
+
+  addMessage("bot typing","Analyzing...");
+  $.ajax({
+    type:"POST",
+    url:"/analyze",
+    data:formData,
+    processData:false,
+    contentType:false,
+    success:function(data){
+      $(".typing").remove();
+      const reply = formatText(data.response);
+      addMessage("bot", reply);
+      saveToHistory(`Analyzed ${file.name}`);
+    },
+    error:function(){
+      $(".typing").remove();
+      addMessage("bot","⚠️ Error analyzing file.");
+    }
+  });
+});
+
+// -------- Chat History --------
+function saveToHistory(prompt) {
+  chatHistory.push(prompt);
+  const li = document.createElement("li");
+  li.textContent = prompt.slice(0,30)+(prompt.length>30?"...":"");
+  li.onclick = ()=> { $("#chat-box").html(""); addMessage("user",prompt); sendMessage(prompt); };
+  document.getElementById("historyList").appendChild(li);
+}
+
+// -------- Dark/Light mode toggle --------
+$("#themeToggle").click(()=> {
+  darkMode = !darkMode;
+  $("body").toggleClass("dark-mode");
+  $("#themeToggle").text(darkMode?"☀️":"🌙");
+});
+
+// -------- 🎤 Speech Recognition --------
+// -------- 🎤 Speech Recognition --------
+const micBtn = document.getElementById("micBtn");
+const textInput = document.getElementById("text");
+let isListening = false;
+
+if ("webkitSpeechRecognition" in window) {
+ const SpeechRecognition = window.webkitSpeechRecognition;
+ const recognition = new SpeechRecognition();
+ recognition.lang = "en-IN";
+ recognition.continuous = false;
+ recognition.interimResults = false;
+
+ // --- Start/Stop Handler ---
+ micBtn.addEventListener("click", () => {
+ if (isListening) {
+ recognition.stop(); // Stop if currently listening
+ } else {
+ try {
+ recognition.start(); // Start listening
+ // Update UI to "listening" state
+ micBtn.classList.add("listening");
+ micBtn.innerHTML = '<i class="fa-solid fa-microphone-slash"></i>';
+ isListening = true;
+ } catch (e) {
+ console.error("Mic start error:", e);
+ // Reset UI if start fails
+ resetMicUI();
+ }
+ }
+ });
+
+ // --- Recognition Events ---
+
+ recognition.onstart = () => {
+ console.log("🎙️ Listening...");
+ };
+ recognition.onresult = (event) => {
+ const transcript = event.results[0][0].transcript.trim();
+ console.log("You said:", transcript);
+ // Just place the text in the input box, DO NOT auto-send.
+ textInput.value = transcript;
+ };
+
+ recognition.onerror = (event) => {
+ console.error("Mic error:", event.error);
+ if (event.error !== "not-allowed") { // Avoid alert for common "not-allowed" error on first try
+ alert("🎤 Mic error: " + event.error + "\nPlease ensure microphone access is allowed.");
+ }
+ resetMicUI();
+ };
+
+ recognition.onend = () => {
+ console.log("Recognition ended");
+ resetMicUI();
+ // Auto-send the message ONLY IF there is text in the input field
+ if (textInput.value.trim() !== "") {
+ sendMessage(textInput.value.trim());
+  }
+ };
+
+ // --- Helper to reset the Mic button UI ---
+ function resetMicUI() {
+ micBtn.classList.remove("listening");
+  micBtn.innerHTML = '<i class="fa-solid fa-microphone"></i>';
+  isListening = false;
+ }
+
+} else {
+ console.warn("Speech recognition not supported");
+ micBtn.style.opacity = "0.5";
+ micBtn.title = "Speech recognition not supported in this browser.";
+}
+</script>
+
+  
+</body>
+</html>
